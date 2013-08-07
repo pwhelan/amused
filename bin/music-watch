@@ -1,0 +1,285 @@
+#!/usr/bin/env php
+<?php
+
+use ICanBoogie\Inflector;
+use \GetId3\GetId3Core as GetId3;
+
+
+$basedir = dirname(dirname(__FILE__));
+require $basedir.'/vendor/autoload.php';
+
+
+// Slightly modified version of Jacob Relkin's answer to this SO question:
+// http://stackoverflow.com/questions/4790453/php-recursive-array-to-object#answer-4790485
+// This version will preserve numerical indices and leave those members in an array.
+// -Phillip Whelan
+function array_to_object($array, $flatten = FALSE) {
+	
+	if (is_array($array)) {
+		$has_numeric_keys = array_reduce(array_keys($array), function(&$result, $item) {
+			if (is_int($item) || $result === TRUE) {
+				$result = TRUE;
+			}
+			return $result;
+		});
+		
+		if ($has_numeric_keys && $flatten && is_array($array) && count($array) <= 1) {
+			if (count($array) == 1) {
+				return array_pop($array);
+			}
+			return NULL;
+		}
+		
+		if (!$has_numeric_keys) {
+			$obj = new stdClass;
+			foreach($array as $k => $v) {
+				$v = array_to_object($v, $flatten);
+				if (is_array($v)) {
+					$inflector = Inflector::get();
+					$k = $inflector->pluralize($k);
+					$obj->{$k} = $v;
+				}
+				else {
+					$obj->{$k} = $v;
+				}
+			}
+			return $obj;
+		}
+	}
+	else if (!ctype_print($array)) {
+		return wordwrap(bin2hex($array), 80);
+	}
+	return $array;
+}
+
+class MusicEncoder
+{
+	public function __construct($loop)
+	{
+		
+	}
+	
+	public function encode()
+	{
+		
+	}
+}
+
+class MusicWatch
+{
+	private $__socket = null;
+	private $__id3 = null;
+	private $__redis = null;
+	protected static $_instance = null;
+	
+	public function __construct()
+	{
+		global $MainLoop;
+		
+		
+		$this->__socket = socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
+		$this->__id3 = new GetID3;
+		$this->__id3
+			->setOptionMD5Data(true)
+			->setOptionMD5DataSource(true)
+			->setEncoding('UTF-8');
+		
+		$this->__redis = new Predis\Async\Client('tcp://127.0.0.1:6379', $MainLoop);
+		
+		if (self::$_instance == NULL) {
+			self::$_instance = $this;
+		}
+	}
+	
+	public function send($op, $file)
+	{
+		$json = json_encode(array('op' => $op, 'file' => $file));
+		socket_sendto($this->__socket, $json, strlen($json), 0, "192.168.1.255", 50333);
+	}
+	
+	public function getTags($path)
+	{
+		$info = $this->__id3->analyze($path);
+		if (!$info) {
+			print "ID3 Failed to Analyze: {$path}\n";
+			return NULL;
+		}
+		
+		$tags = array();
+		
+		
+		if (isset($info['tags'])) {
+			foreach(array('vorbiscomment', 'id3v2', 'id3v1') as $format) {
+				if (isset($info['tags'][$format])) {
+					$tag = array_map(function($item) {
+						return $item[0];
+					},
+					$info['tags'][$format]);
+					
+					if (!isset($tag['artist']) && isset($tag['albumartist'])) {
+						$tag['artist'] = $tag['albumartist'];
+					}
+					
+					$tags[] = $tag;
+				}
+			}
+		}
+		
+		if (preg_match('/^([^\d]*)([\d]{0,2})[\s\.\-]+([^\-]+)[\s\-]+(.+)\.(flac|mp3)$/', basename($path), $m)) {
+			$paths = explode('/', dirname($path));
+			
+			if (is_numeric($paths[4])) {
+				$year = $paths[4];
+				$album = $paths[5];
+			}
+			else {
+				$stat = stat($path);
+				$year = $stat['ctime'];
+				$album = $path[4];
+			}
+			
+			$tags[] = array(
+				'artist'	=> trim($m[3]), 
+				'title'		=> trim($m[4]),
+				'year'		=> $year,
+				'album'		=> $album
+			);
+		}
+		
+		if (count($tags) > 0) {
+			$tags = (object)call_user_func_array(
+				'array_merge', 
+				array_reverse($tags)
+			);
+		}
+		else {
+			$tags = new stdClass;
+		}
+		return (object)array('tags' => $tags, 'id3' => $info);
+	}
+	
+	public static function instance()
+	{
+		if (self::$_instance == NULL) {
+			self::$_instance = new MusicWatch;
+		}
+		return self::$_instance;
+	}
+	
+	public static function broadcast($op, $path)
+	{
+		//print "BROADCAST = {$op} -> {$path}\n";
+		$d = new SplFileInfo($path);
+		
+		
+		// Check if file was deleted...
+		if ($op == IN_DELETE) {
+			return;
+		}
+		
+		// Check if file moved out...
+		if ($op == IN_MOVED_FROM && FALSE) {
+			return;
+		}
+		
+		switch($d->getExtension()) {
+		case 'mp3':
+		case 'flc':
+		case 'flac':
+			try {
+				$info = self::instance()->getTags($path);
+				if ($info == NULL) {
+					print 'NO ID3 for = '.$path."\n";
+					return;
+				}
+				foreach(array('album', 'artist', 'title', 'year') as $tag) {
+					if (!isset($info->tags->$tag)) {
+						print "INCOMPLETE TAGS FOR = ".$d->getFilename()."\n";
+						//print_r($info);
+						return;
+					}
+				}
+				//if (isset($info->titles) && count($info->titles) > 1) {
+				//	$info->title = $info->titles[array_keys($info->titles[0])];
+				//}
+				
+				print "TRACK: {$info->tags->year} {$info->tags->album} . {$info->tags->artist} - {$info->tags->title}\n";
+				//print_r($info);
+				//print "TRACK: {$info->tags->id3v1->"
+			}
+			catch (Exception $e) {
+				print "ERROR: unable to read {$path}, ".$e->getMessage()."\n";
+			}
+			//print_r($info);
+			//$inotify->add($dir->getPathname(), IN_MODIFY);
+			//print "FILE = ".$d->getFilename()."\n";
+		}
+		
+		$file = substr($path, strlen('/home/pwhelan/Music/Psytrance/'));
+		//self::instance()->send($op, $file);
+	}
+}
+
+function scan_directory($dirname, $loop)
+{
+	$inotify = new MKraemer\ReactInotify\Inotify($loop);
+	
+	$dir = new RecursiveDirectoryIterator($dirname, FilesystemIterator::SKIP_DOTS);
+	function directory_walk($inotify, $dir) {
+		foreach($dir as $d) {
+			if (!$d->isDir()) {
+				switch($d->getExtension()) {
+				case 'mp3':
+				case 'flc':
+				case 'flac':
+					$inotify->add($d->getPathname(), IN_MODIFY);
+					print "FILE = ".$d->getFilename()."\n";
+					MusicWatch::broadcast(IN_CREATE, $d->getPathname());
+				}
+			}
+			else {
+				$inotify->add($d->getPathname(), IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO);
+				directory_walk($inotify, $dir->getChildren());
+			}
+		}
+	};
+
+	directory_walk($inotify, $dir);
+
+	$inotify->on(IN_CREATE, function ($path) {
+		MusicWatch::broadcast(IN_CREATE, $path);
+	});
+
+	$inotify->on(IN_DELETE, function ($path) {
+		MusicWatch::broadcast(IN_DELETE, $path);
+	});
+
+	$inotify->on(IN_MODIFY, function ($path) {
+		MusicWatch::broadcast(IN_MODIFY, $path);
+	});
+
+	$inotify->on(IN_MOVED_FROM, function ($path) {
+		MusicWatch::broadcast(IN_MOVED_FROM, $path);
+	});
+
+	$inotify->on(IN_MOVED_TO, function ($path) {
+		MusicWatch::broadcast(IN_MOVED_TO, $path);
+	});
+	
+	$inotify->add($dirname, IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO);	
+}
+
+
+$MainLoop = React\EventLoop\Factory::create();
+
+
+$client = new Predis\Async\Client('tcp://127.0.0.1:6379', $MainLoop);
+$client->connect(function($client) {
+	
+	$client->pubsub('musicwatch:scandir', function($scandir) use ($client) {
+		print "SCANNING DIRECTORY = {$scandir->payload}\n";
+		scan_directory($scandir->payload, $client->getEventLoop());
+	});
+});
+
+$loop->run();

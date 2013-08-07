@@ -1,0 +1,81 @@
+#!/usr/bin/env php
+<?php
+
+use ICanBoogie\Inflector;
+use \GetId3\GetId3Core as GetId3;
+
+
+// Slightly modified version of Jacob Relkin's answer to this SO question:
+// http://stackoverflow.com/questions/4790453/php-recursive-array-to-object#answer-4790485
+// This version will preserve numerical indices and leave those members in an array.
+// -Phillip Whelan
+function array_to_object($array, $flatten = FALSE) {
+	
+	if (is_array($array)) {
+		$has_numeric_keys = array_reduce(array_keys($array), function(&$result, $item) {
+			if (is_int($item) || $result === TRUE) {
+				$result = TRUE;
+			}
+			return $result;
+		});
+		
+		if ($has_numeric_keys && $flatten && is_array($array) && count($array) <= 1) {
+			if (count($array) == 1) {
+				return array_pop($array);
+			}
+			return NULL;
+		}
+		
+		if (!$has_numeric_keys) {
+			$obj = new stdClass;
+			foreach($array as $k => $v) {
+				$v = array_to_object($v, $flatten);
+				if (is_array($v)) {
+					$inflector = Inflector::get();
+					//$k = $inflector->pluralize($k);
+					$obj->{$k} = $v;
+				}
+				else {
+					$obj->{$k} = $v;
+				}
+			}
+			return $obj;
+		}
+	}
+	else if (!ctype_print($array)) {
+		return wordwrap(bin2hex($array), 80);
+	}
+	return $array;
+}
+
+
+$basedir = dirname(dirname(__FILE__));
+
+require $basedir.'/vendor/autoload.php';
+
+$id3 = new GetID3;
+$id3->setOptionMD5Data(true)
+	->setOptionMD5DataSource(true)
+	->setEncoding('UTF-8');
+
+$dir = new RecursiveDirectoryIterator('/home/pwhelan/Music/Psytrance/', FilesystemIterator::SKIP_DOTS);
+function directory_walk($id3, $dir) {
+	foreach($dir as $d) {
+		if (!$d->isDir()) {
+			switch($d->getExtension()) {
+			case 'mp3':
+			case 'flc':
+			case 'ogg':
+			//case 'wav':
+			case 'flac':
+				print "FILE = ".$d->getFilename()."\n";
+				print_r($id3->analyze($d->getPathname()));
+			}
+		}
+		else {
+			directory_walk($id3, $dir->getChildren());
+		}
+	}
+};
+
+directory_walk($id3, $dir);

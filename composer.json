@@ -1,0 +1,9 @@
+{
+	"require": {
+		"react/http": "0.2.*",
+		"mkraemer/react-inotify": "dev-master",
+		"phansys/getid3": "2.1.*@dev",
+		"icanboogie/inflector": "dev-master",
+		"predis/predis-async": "dev-master"
+	}
+}

@@ -3,11 +3,21 @@
 
 use ICanBoogie\Inflector;
 use \GetId3\GetId3Core as GetId3;
-
+use Monolog\Logger;
+use Monolog\Handler\NullHandler;
+use FFMpeg\FFMpeg;
 
 $basedir = dirname(dirname(__FILE__));
 require $basedir.'/vendor/autoload.php';
 
+
+$extensions = get_loaded_extensions();
+
+foreach(array('phpiredis', 'inotify') as $extension) {
+	if (!in_array($extension, $extensions)) {
+		die("ERROR: extension {$extension} is missing\n");
+	}
+}
 
 // Slightly modified version of Jacob Relkin's answer to this SO question:
 // http://stackoverflow.com/questions/4790453/php-recursive-array-to-object#answer-4790485
@@ -52,49 +62,148 @@ function array_to_object($array, $flatten = FALSE) {
 	return $array;
 }
 
-class MusicEncoder
+class MusicEncode
 {
-	public function __construct($loop)
+	private $__queue = array();
+	private $__queue_backlog = array();
+	private static $__instance = NULL;
+	private $__queue_size = 4;
+	private $__loop = NULL;
+	
+	public function __construct($queue_size = 4)
+	{
+		if (self::$__instance == NULL) {
+			self::$__instance = $this;
+		}
+		
+		$this->__loop = React\EventLoop\Factory::create();
+		
+		$this->__loop->addPeriodicTimer(5, function () {
+			while(($pid = pcntl_wait($status, WNOHANG)) > 0) {
+				if (array_key_exists($pid, $this->__queue)) {
+					$deferred = $this->__queue[$pid];
+					unset($this->__queue[$pid]);
+					
+					$deferred->resolver()->resolve($status);
+				}
+			}
+		});
+	}
+	
+	public static function instance()
+	{
+		if (self::$__instance == NULL) {
+			new self;
+		}
+		return self::$__instance;
+	}
+	
+	
+	public function doEncode()
 	{
 		
 	}
 	
-	public function encode()
+	public function queueEncoder($format, $pathname)
 	{
+		if (count($this->__queue) < $this->__queue_size) {
+			
+			switch(($pid = pcntl_fork())) {
+			default:
+				$deferred = new React\Promise\Deferred();
+				$this->__queue[$pid] = $deferred;
+			case 0:
+				try {
+					// Create a logger
+					$logger = new Logger('MyLogger');
+					$logger->pushHandler(new NullHandler());
+					
+					// You have to pass a Monolog logger
+					// This logger provides some usefull infos about what's happening
+					$ffmpeg = FFMpeg::load($logger);
+					
+					$tmp = tempnam('/tmp/musicmaster', 'MP3');
+					
+					$codec = new FFMpeg\Format\Audio\Mp3;
+					$codec->setAudioKiloBitrate(320);
+					
+					// open a video, extract an image at second 5 and 12 then close
+					$ffmpeg->open($pathname)
+						->encode($codec, $tmp)
+						->close();
+					
+				}
+				catch (Exception $e) {
+					exit(-1);
+				}
+				exit(0);
+				
+			case -1:
+				return FALSE;
+			}
+			
+			// ADD TIMER if it's not there...
+		}
 		
+		if (count($this->__queue_backlog) > 0) {
+			$promise = React\Promise\When::any($this->__queue);
+			$promise->then(function() {
+				$song = array_shift($this->__queued);
+				MusicEncoder::encode($song);
+			});
+		}
+	}
+	
+	public static function encode($format, $pathname)
+	{
+		self::instance()->doEncode($format, $pathname);
+	}
+	
+	public function run()
+	{
+		$this->__loop->run();
 	}
 }
 
-class MusicWatch
+class MusicScan
 {
 	private $__socket = null;
 	private $__id3 = null;
 	private $__redis = null;
-	protected static $_instance = null;
+	private $__loop = null;
+	private $__inotify = null;
+	private $__pubsub = null;
+	private static $_instance = null;
 	
 	public function __construct()
 	{
-		global $MainLoop;
-		
-		
-		$this->__socket = socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
 		$this->__id3 = new GetID3;
 		$this->__id3
 			->setOptionMD5Data(true)
-			->setOptionMD5DataSource(true)
 			->setEncoding('UTF-8');
 		
-		$this->__redis = new Predis\Async\Client('tcp://127.0.0.1:6379', $MainLoop);
+		// TODO: use promises to keep server from going up before connecting to redis..
+		$client = new Predis\Client(array(
+			'host'	=> '127.0.0.1',
+			'port'	=> 6379,
+			'read_write_timeout' => 0
+		));
+		
+		// Initialize a new pubsub context
+		$this->__pubsub = $client->pubsub();
+		$this->__pubsub->subscribe('musicwatch:scandir');
+		
+		$redis = new Predis\Client(array(
+			'host'	=> '127.0.0.1',
+			'port'	=> 6379,
+			'read_write_timeout' => 0
+		));
+		
+		$this->__redis = $redis;
 		
 		if (self::$_instance == NULL) {
 			self::$_instance = $this;
 		}
-	}
-	
-	public function send($op, $file)
-	{
-		$json = json_encode(array('op' => $op, 'file' => $file));
-		socket_sendto($this->__socket, $json, strlen($json), 0, "192.168.1.255", 50333);
 	}
 	
 	public function getTags($path)
@@ -155,7 +264,11 @@ class MusicWatch
 		else {
 			$tags = new stdClass;
 		}
-		return (object)array('tags' => $tags, 'id3' => $info);
+		
+		return (object)array(
+			'tags' => $tags, 
+			'id3' => $info
+		);
 	}
 	
 	public static function instance()
@@ -166,44 +279,52 @@ class MusicWatch
 		return self::$_instance;
 	}
 	
-	public static function broadcast($op, $path)
+	private function __queue($file)
 	{
-		//print "BROADCAST = {$op} -> {$path}\n";
-		$d = new SplFileInfo($path);
-		
-		
-		// Check if file was deleted...
-		if ($op == IN_DELETE) {
-			return;
-		}
-		
-		// Check if file moved out...
-		if ($op == IN_MOVED_FROM && FALSE) {
-			return;
-		}
-		
-		switch($d->getExtension()) {
+		switch($file->getExtension()) {
 		case 'mp3':
 		case 'flc':
 		case 'flac':
 			try {
-				$info = self::instance()->getTags($path);
+				$info = self::instance()->getTags($file->getPathname());
 				if ($info == NULL) {
 					print 'NO ID3 for = '.$path."\n";
 					return;
 				}
 				foreach(array('album', 'artist', 'title', 'year') as $tag) {
 					if (!isset($info->tags->$tag)) {
-						print "INCOMPLETE TAGS FOR = ".$d->getFilename()."\n";
+						print "INCOMPLETE TAGS FOR = ".$file->getFilename()."\n";
 						//print_r($info);
 						return;
 					}
 				}
+				
+				if (!isset($info->id3['md5_data'])) {
+					print "NO MD5 sum: ".$file->getPathname()."\n";
+					print_r($info->id3);
+					die();
+					return;
+				}
+				
+				$info->md5 = $info->id3['md5_data'];
+				$info->filenamepath = $info->id3['filenamepath'];
+				unset($info->id3);
+				
+				$json = json_encode($info);
+				if (strlen($json) < 0) {
+					print "BAD JSON\n";
+					return;
+				}
+				print "SENDING....\n";
+				$this->__redis->rpush(
+					"musicwatch:library:scanned", 
+					$json
+				);
 				//if (isset($info->titles) && count($info->titles) > 1) {
 				//	$info->title = $info->titles[array_keys($info->titles[0])];
 				//}
 				
-				print "TRACK: {$info->tags->year} {$info->tags->album} . {$info->tags->artist} - {$info->tags->title}\n";
+				//print "TRACK: {$info->tags->year} {$info->tags->album} . {$info->tags->artist} - {$info->tags->title}\n";
 				//print_r($info);
 				//print "TRACK: {$info->tags->id3v1->"
 			}
@@ -211,75 +332,264 @@ class MusicWatch
 				print "ERROR: unable to read {$path}, ".$e->getMessage()."\n";
 			}
 			//print_r($info);
-			//$inotify->add($dir->getPathname(), IN_MODIFY);
+			//$this->__inotify->add($dir->getPathname(), IN_MODIFY);
 			//print "FILE = ".$d->getFilename()."\n";
 		}
-		
-		$file = substr($path, strlen('/home/pwhelan/Music/Psytrance/'));
-		//self::instance()->send($op, $file);
 	}
-}
-
-function scan_directory($dirname, $loop)
-{
-	$inotify = new MKraemer\ReactInotify\Inotify($loop);
 	
-	$dir = new RecursiveDirectoryIterator($dirname, FilesystemIterator::SKIP_DOTS);
-	function directory_walk($inotify, $dir) {
+	public function run()
+	{
+		print "Scanner Online\n";
+		
+		while(1) {
+			foreach($this->__pubsub as $message) {
+				switch($message->kind) {
+				case 'subscribe':
+					print "Subscribed to Scan {$message->channel}\n";
+					break;
+				case 'message':
+					if ($message->channel == 'musicwatch:scandir') {
+						print "SCANNING DIRECTORY = {$message->payload}\n";
+						$this->scan($message->payload);
+					}
+				}
+			}
+		}
+	}
+	
+	private function __dirwalk($dir)
+	{
 		foreach($dir as $d) {
 			if (!$d->isDir()) {
 				switch($d->getExtension()) {
 				case 'mp3':
 				case 'flc':
 				case 'flac':
-					$inotify->add($d->getPathname(), IN_MODIFY);
-					print "FILE = ".$d->getFilename()."\n";
-					MusicWatch::broadcast(IN_CREATE, $d->getPathname());
+					$this->__queue($d);
 				}
 			}
 			else {
-				$inotify->add($d->getPathname(), IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO);
-				directory_walk($inotify, $dir->getChildren());
+				$this->__queue($d);
+				$this->__dirwalk($dir->getChildren());
 			}
 		}
-	};
-
-	directory_walk($inotify, $dir);
-
-	$inotify->on(IN_CREATE, function ($path) {
-		MusicWatch::broadcast(IN_CREATE, $path);
-	});
-
-	$inotify->on(IN_DELETE, function ($path) {
-		MusicWatch::broadcast(IN_DELETE, $path);
-	});
-
-	$inotify->on(IN_MODIFY, function ($path) {
-		MusicWatch::broadcast(IN_MODIFY, $path);
-	});
-
-	$inotify->on(IN_MOVED_FROM, function ($path) {
-		MusicWatch::broadcast(IN_MOVED_FROM, $path);
-	});
-
-	$inotify->on(IN_MOVED_TO, function ($path) {
-		MusicWatch::broadcast(IN_MOVED_TO, $path);
-	});
+	}
 	
-	$inotify->add($dirname, IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO);	
+	public function scan($dirname)
+	{	
+		print "SCANNING: {$dirname}\n";
+		$dir = new RecursiveDirectoryIterator($dirname, FilesystemIterator::SKIP_DOTS);
+		$this->__dirwalk($dir);
+		print "DONE SCAN\n";
+	}
+}
+
+class MusicWatch
+{
+	private $__socket = null;
+	private $__redis = null;
+	private $__loop = null;
+	protected static $_instance = null;
+	
+	public function __construct()
+	{
+		self::$_instance = $this;
+		
+		
+		$this->__socket = socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
+		socket_set_option($this->__socket, SOL_SOCKET, SO_BROADCAST, 1); 
+		
+		$this->__loop = React\EventLoop\Factory::create();
+		$this->__inotify = new MKraemer\ReactInotify\Inotify($this->__loop);
+		
+		$this->__redis = new Predis\Async\Client('tcp://127.0.0.1:6379', $this->__loop);
+		
+		
+		$this->__redis->connect(function($client) {
+			print "Connected Music Watch to Redis\n";
+			$client->brpoplpush(
+				"musicwatch:library:scanned", 
+				"musicwatch:library:sent",
+				0,
+				array($this, 'send')
+			);
+		});
+		
+		$this->__inotify->on(IN_CREATE, function ($path) {
+			///$this->__queue(IN_CREATE, new SplFileInfo($path));
+		});
+
+		$this->__inotify->on(IN_DELETE, function ($path) {
+			//$this->__queue(IN_DELETE, $path);
+		});
+
+		$this->__inotify->on(IN_MODIFY, function ($path) {
+			//$this->__queue(IN_MODIFY, $path);
+		});
+
+		$this->__inotify->on(IN_MOVED_FROM, function ($path) {
+			//$this->__queue(IN_MOVED_FROM, $path);
+		});
+
+		$this->__inotify->on(IN_MOVED_TO, function ($path) {
+			//$this->__queue(IN_MOVED_TO, $path);
+		});
+	}
+	
+	public static function sendMessage($message)
+	{
+		self::instance()->send($message);
+	}
+	
+	public function send($message)
+	{
+		print "RPOPLPUSHED\n";
+		print "==========\n";
+		print_r($message);
+		print "==========\n";
+		
+		try {
+			$song = json_decode($message);
+			$info = new SplFileInfo($song->filenamepath);
+			
+			if ($info->isDir()) {
+				$this->__inotify->add($info->getPathname(), 
+					IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO);
+			}
+			else {
+				$this->__inotify->add($info->getPathname(), 
+					IN_MODIFY | IN_MOVED_FROM | IN_DELETE);
+			}
+			
+			print "STORED SONG = {$song->md5}\n";
+			
+			$json = json_encode(array('song' => $song->md5));
+			socket_sendto($this->__socket, $json, strlen($json), 0, 
+				"192.168.1.255", 50333);
+		}
+		catch (Exception $e) {
+		}
+		finally {
+			$this->__redis->brpoplpush(
+				"musicwatch:library:scanned", 
+				"musicwatch:library:sent",
+				0,
+				array('MusicWatch', 'sendMessage')
+			);
+		}
+		
+	}
+	
+	public static function instance()
+	{
+		if (self::$_instance == NULL) {
+			self::$_instance = new MusicWatch;
+		}
+		return self::$_instance;
+	}
+	
+	public function run()
+	{
+		$this->__loop->run();
+	}
+}
+
+class MusicWeb
+{
+	private $__loop;
+	
+	
+	public function __construct()
+	{
+		$this->__loop = React\EventLoop\Factory::create();
+
+		$redis = new Predis\Async\Client('tcp://127.0.0.1:6379', $this->__loop);
+		$redis->connect(function($client) {
+			print "Connected Web Server to Redis\n";
+		});
+
+		$socket = new React\Socket\Server($this->__loop);
+
+		$http = new React\Http\Server($socket);
+		$http->on('request', function ($request, $response) use ($redis) {
+			$response->writeHead(200, array('Content-Type' => 'text/plain'));
+			$response->end("Hello: ".$request->getPath()."\n");
+		});
+
+		$socket->listen(50333);
+	}
+	
+	public function run()
+	{
+		$this->__loop->run();		
+	}
 }
 
 
-$MainLoop = React\EventLoop\Factory::create();
+$pids = array();
+$tries = array();
 
+function spawn_service($servicename)
+{
+	switch(($pid = pcntl_fork())) {
+	case -1:
+		die("BAd, Bad, BAD!\n");
+	case 0:
+		if (function_exists('setproctitle')) {
+			setproctitle('[music-watch]: '.$servicename);
+		}
+		if (function_exists('cli_set_process_title')) {
+			cli_set_process_title("[music-watch]: {$servicename}");
+		}
+		
+		$service = new $servicename;
+		print "INVOKING {$servicename}\n";
+		$service->run();
+		
+		print "OOOOPS {$servicename} ...\n";
+		exit(0);
+		break;
+	default:
+		print "Spawning[{$pid}]: {$servicename}\n";
+		$tries[$servicename] = 0;
+		return $pid;
+	}
+}
 
-$client = new Predis\Async\Client('tcp://127.0.0.1:6379', $MainLoop);
-$client->connect(function($client) {
-	
-	$client->pubsub('musicwatch:scandir', function($scandir) use ($client) {
-		print "SCANNING DIRECTORY = {$scandir->payload}\n";
-		scan_directory($scandir->payload, $client->getEventLoop());
-	});
+if (function_exists('setproctitle')) {
+	setproctitle('[music-watch]');
+}
+if (function_exists('cli_set_process_title')) {
+	cli_set_process_title("[music-watch]");
+}
+
+if (count($argv) <= 1) {
+	foreach(array('MusicScan', 'MusicWatch') as $servicename) {
+		$pids[$servicename] = spawn_service($servicename);
+	}	
+}
+else {
+	$args = $argv;
+	$progname = array_shift($args);
+	foreach($args as $servicename) {
+		$pids[$servicename] = spawn_service($servicename);
+	}
+}
+
+while(($pid = pcntl_wait($status))) {
+	$servicename = array_search($pid, $pids);
+	if ($tries[$servicename] < 3) {
+		print "$servicename has died, restarting...\n";
+		$pids[$servicename] = spawn_service($servicename);
+		print "Restarted\n";
+	}
+	else {
+		print "Giving up on {$servicename}\n";
+	}
+}
+
+pcntl_signal(SIGTERM, function($sig) {
+	foreach($pids as $pid) {
+		posix_kill($pid, SIGTERM);
+	}
 });
-
-$loop->run();

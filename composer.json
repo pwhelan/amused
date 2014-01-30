@@ -8,5 +8,11 @@
 		"predis/predis": "0.8.*@dev",
 		"php-ffmpeg/php-ffmpeg": "0.3.*@dev",
 		"react/promise": "1.0.*@dev"
+	},
+	"autoload": {
+		"psr-0": {
+			"Roto": "src/", 
+			"Amused": "src/"
+		}
 	}
 }

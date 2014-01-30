@@ -501,22 +501,46 @@ class MusicWeb
 	
 	public function __construct()
 	{
+		$deferred = new React\Promise\Deferred;
+		$promise = $deferred->promise();
+		
 		$this->__loop = React\EventLoop\Factory::create();
-
+		
+		
 		$redis = new Predis\Async\Client('tcp://127.0.0.1:6379', $this->__loop);
-		$redis->connect(function($client) {
+		$redis->connect(function($client) use ($deferred) {
 			print "Connected Web Server to Redis\n";
+			$deferred->resolve(true);
 		});
-
+		
+		
 		$socket = new React\Socket\Server($this->__loop);
-
 		$http = new React\Http\Server($socket);
-		$http->on('request', function ($request, $response) use ($redis) {
-			$response->writeHead(200, array('Content-Type' => 'text/plain'));
-			$response->end("Hello: ".$request->getPath()."\n");
+		
+		
+		$router = new Roto\Router;
+		
+		$router->get('/goodbye', function() use ($redis) {
+			
+			$this->response->writeHead(200, array('Content-Type' => 'text/plain'));
+			$this->response->end("Goodbye World!\n");
+			
 		});
-
-		$socket->listen(50333);
+		
+		$router->get('/hello/(:there)', function($there) use ($redis) {
+			
+			$this->response->writeHead(200, array('Content-Type' => 'text/plain'));
+			$this->response->end("Hello {$there}!\n");
+			
+		});
+		
+		$http->on('request', $router->route());
+		
+		
+		$promise->then(function() use ($socket) {
+			$socket->listen(50333);
+		});
+		
 	}
 	
 	public function run()
@@ -564,8 +588,9 @@ if (function_exists('cli_set_process_title')) {
 }
 
 if (count($argv) <= 1) {
-	foreach(array('MusicScan', 'MusicWatch') as $servicename) {
+	foreach(array('MusicScan', 'MusicWatch', 'MusicWeb') as $servicename) {
 		$pids[$servicename] = spawn_service($servicename);
+		$tries[$servicename] = 0;
 	}	
 }
 else {
@@ -573,6 +598,7 @@ else {
 	$progname = array_shift($args);
 	foreach($args as $servicename) {
 		$pids[$servicename] = spawn_service($servicename);
+		$tries[$servicename] = 0;
 	}
 }
 

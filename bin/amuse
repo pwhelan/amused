@@ -1,0 +1,9 @@
+#!/usr/bin/env php
+<?php
+
+$basedir = dirname(dirname(__FILE__));
+require $basedir.'/vendor/autoload.php';
+
+$client = new Predis\Client();
+
+$client->publish('musicwatch:scandir', $argv[1]);

@@ -1,11 +1,10 @@
 {
 	"require": {
-		"react/http": "0.2.*",
+		"react/react": "0.3.*@dev",
 		"mkraemer/react-inotify": "dev-master",
 		"phansys/getid3": "2.1.*@dev",
 		"icanboogie/inflector": "dev-master",
 		"predis/predis-async": "dev-master",
-		"predis/predis": "0.8.*@dev",
 		"php-ffmpeg/php-ffmpeg": "0.3.*@dev",
 		"react/promise": "1.0.*@dev"
 	},

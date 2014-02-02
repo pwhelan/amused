@@ -27,7 +27,7 @@ class Watch
 		$this->__redis->connect(function($client) {
 			print "Connected Music Watch to Redis\n";
 			$client->brpoplpush(
-				"musicwatch:library:scanned", 
+				"musicwatch:library:saved", 
 				"musicwatch:library:sent",
 				0,
 				array($this, 'send')

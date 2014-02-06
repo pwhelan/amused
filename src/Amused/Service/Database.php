@@ -2,6 +2,7 @@
 
 namespace Amused\Service;
 
+use Amused\Query\Result;
 
 class Database
 {
@@ -10,6 +11,7 @@ class Database
 	
 	public function __construct()
 	{
+		
 		$redisconnected = new \React\Promise\Deferred;
 		$mysqlconnected = new \React\Promise\Deferred;
 		$promise = \React\Promise\When::all([
@@ -40,49 +42,63 @@ class Database
 		
 		$promise->then(function($results) use ($redis, $mysql) {
 			
+			$builder = new \Amused\Query\Builder($mysql);
+			
 			$redis->brpop(
 				"musicwatch:library:scanned", 
 				0,
-				$this->_doSave($redis, $mysql)
+				$this->_doSave($redis, $builder)
 			);
 			
 		});
 		
 	}
 	
-	private function _doSave($redis, $mysql)
+	private function _doSave($redis, $builder)
 	{
-		return function ($message) use ($redis, $mysql)
+		return function ($message) use ($redis, $builder)
 		{
-			print "MESSAGE\n";
-			print_r($message);
-			
 			$song = json_decode($message[1]);
+			if (empty($song)) {
+				$redis->brpop(
+					"musicwatch:library:scanned", 
+					0,
+					$this->_doSave($redis, $builder)
+				);
+			}
 			
-			$mysql->query(
-				'INSERT INTO tracks (artist, title) '.
-				"VALUES ('{$song->tags->artist}', '{$song->tags->title}')", 
-				function ($command, $mysql) use ($song, $redis) {
-					//test whether the query was executed successfully
-					if ($command->hasError()) {
-						//error 
-						$error = $command->getError();// get the error object, instance of Exception.
-						$redis->lpush("musicwatch:library:error", json_encode($song));
-					} else {
-						$results = $command->affectedRows; //get the results
-						$insertId  = $command->insertId; // get table fields
-						
-						$song->id = $insertId;
-						$redis->lpush("musicwatch:library:saved", json_encode($song));
-						
-						print "SONG\n";
-						print_r($song);
-					}
+			$trackdata = array_only(
+				(array)$song->tags,
+				['artist', 'title', 'album', 'date', 'bpm']
+			);
+			
+			$trackdata['filename'] = $song->filenamepath;
+			
+			$insert = $builder->into('tracks')
+					->insert($trackdata);
+			
+			$insert->then(
+				function (Result $result) use ($song, $redis, $builder) {
+					/* 
+					[artist] => Liber Chaos
+					[title] => The Unabated Aum (Konvndrvm's Ether Bath Rmx)
+					[year] => 1389352974
+					[album] => CetaCreate - Benefit for CinderVomit Vol. 3
+					[date] => 2012
+					[comment] => Visit http://jellyfishfrequency.bandcamp.com
+					[tracknumber] => 9
+					[albumartist] => VA
+					[description] => Visit http://jellyfishfrequency.bandcamp.com
+					[compilation] => 1
+					[rating:banshee] => 0.5
+					 */
+					$song->id = $result->lastInsertId();
+					$redis->lpush("musicwatch:library:saved", json_encode($song));
 					
 					$redis->brpop(
 						"musicwatch:library:scanned", 
 						0,
-						$this->_doSave($redis, $mysql)
+						$this->_doSave($redis, $builder)
 					);
 				}
 			);

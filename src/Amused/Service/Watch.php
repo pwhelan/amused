@@ -80,9 +80,9 @@ class Watch
 					IN_MODIFY | IN_MOVED_FROM | IN_DELETE);
 			}
 			
-			print "STORED SONG = {$song->md5}\n";
+			print "STORED SONG = {$song->id}\n";
 			
-			$json = json_encode(array('song' => $song->md5));
+			$json = json_encode(array('song' => $song->id));
 			socket_sendto($this->__socket, $json, strlen($json), 0, 
 				"192.168.1.255", 50333);
 		}

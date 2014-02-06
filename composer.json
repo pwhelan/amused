@@ -8,12 +8,15 @@
 		"predis/predis-async": "dev-master",
 		"php-ffmpeg/php-ffmpeg": "0.3.*@dev",
 		"react/promise": "1.0.*@dev",
-		"react/mysql": "dev-master"
+		"react/mysql": "dev-master",
+		"usmanhalalit/pixie": "dev-master",
+		"illuminate/support": "4.0.*@dev"
 	},
 	"autoload": {
 		"psr-0": {
 			"Roto": "src/", 
-			"Amused": "src/"
+			"Amused": "src/",
+			"React": "src/"
 		}
 	}
 }

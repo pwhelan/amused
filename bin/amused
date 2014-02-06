@@ -10,6 +10,50 @@ use FFMpeg\FFMpeg;
 $basedir = dirname(dirname(__FILE__));
 require $basedir.'/vendor/autoload.php';
 
+require $basedir.'/vendor/illuminate/support/Illuminate/Support/helpers.php';
+
+// used to trick Pixie\Database into letting us use their query builder
+class FakePDO extends \PDO 
+{
+	public function __construct()
+	{
+	}
+	
+	public function __isset($key)
+	{
+		return false;
+	}
+	
+	public function __get($key)
+	{
+		return false;
+	}
+	
+	public function __set($key, $val)
+	{
+		return;
+	}
+	
+	public function __call($func, $args)
+	{
+		return;
+	}
+	
+	public static function __callStatic($func, $args)
+	{
+		return;
+	}
+	
+	public function prepare($statement, $options = NULL)
+	{
+		return new self;
+	}
+	
+	public function setAttribute($attribute, $value)
+	{
+		return false;
+	}
+}
 
 $extensions = get_loaded_extensions();
 

@@ -154,7 +154,8 @@ class Scan
 					print "BAD JSON\n";
 					return;
 				}
-				print "SENDING....\n";
+				
+				//print "SENDING....\n";
 				$this->__redis->rpush(
 					"musicwatch:library:scanned", 
 					$json

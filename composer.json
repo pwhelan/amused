@@ -10,7 +10,8 @@
 		"react/promise": "1.0.*@dev",
 		"react/mysql": "dev-master",
 		"usmanhalalit/pixie": "dev-master",
-		"illuminate/support": "4.0.*@dev"
+		"illuminate/support": "4.0.*@dev",
+		"robmorgan/phinx": "*"
 	},
 	"autoload": {
 		"psr-0": {

@@ -16,7 +16,8 @@
 		"psr-0": {
 			"Roto": "src/", 
 			"Amused": "src/",
-			"React": "src/"
+			"React": "src/",
+			"Pixie": "src/"
 		}
 	}
 }

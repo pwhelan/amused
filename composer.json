@@ -1,4 +1,16 @@
 {
+	"name": "amused/amused",
+	"description" : "An asynchronous server for cataloging and synchronizing music",
+	"keywords": ["react", "music"],
+	"homepage": "https://github.com/pwhelan/amused",
+	"authors": [
+		{
+			"name": "Phillip Whelan",
+			"email": "pwhelan@mixxx.org",
+			"homepage": "http://pwhelan.github.io"
+		}
+	],
+	"license": "LGPL-3.0",
 	"require": {
 		"react/react": "0.3.*@dev",
 		"mkraemer/react-inotify": "dev-master",
